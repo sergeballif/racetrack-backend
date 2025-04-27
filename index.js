@@ -25,7 +25,8 @@ const io = new Server(server, {
       if (allowedOrigins.includes(origin)) return callback(null, origin); // Return the origin string
       return callback(new Error('Not allowed by CORS'));
     },
-    methods: ['GET', 'POST']
+    methods: ['GET', 'POST', 'OPTIONS'],
+    credentials: true
   }
 });
 
@@ -40,6 +41,17 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json());
+
+// Explicitly handle preflight OPTIONS for Socket.io polling
+app.options('/socket.io/*', cors({
+  origin: function(origin, callback) {
+    console.log('[EXPRESS CORS] Preflight from origin:', origin);
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, origin);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true
+}));
 
 app.get('/', (req, res) => {
   res.send('Quiz Game Backend Running');
