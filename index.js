@@ -19,6 +19,7 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: function(origin, callback) {
+      console.log('[SOCKET.IO CORS] Request from origin:', origin);
       // Allow requests with no origin (like mobile apps, curl, etc.)
       if (!origin) return callback(null, true);
       if (allowedOrigins.includes(origin)) return callback(null, origin); // Return the origin string
@@ -30,6 +31,7 @@ const io = new Server(server, {
 
 app.use(cors({
   origin: function(origin, callback) {
+    console.log('[EXPRESS CORS] Request from origin:', origin);
     // Allow requests with no origin (like mobile apps, curl, etc.)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, origin); // Return the origin string
