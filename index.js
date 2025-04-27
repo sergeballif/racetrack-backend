@@ -6,17 +6,35 @@ const dotenv = require('dotenv');
 const { sanitizeName, rateLimit } = require('./utils');
 dotenv.config();
 
+// Helper to support multiple comma-separated origins
+function parseOrigins(originsStr) {
+  if (!originsStr) return ['http://localhost:5173'];
+  return originsStr.split(',').map(o => o.trim()).filter(Boolean);
+}
+
+const allowedOrigins = parseOrigins(process.env.CORS_ORIGIN);
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+    origin: function(origin, callback) {
+      // Allow requests with no origin (like mobile apps, curl, etc.)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, origin); // Return the origin string
+      return callback(new Error('Not allowed by CORS'));
+    },
     methods: ['GET', 'POST']
   }
 });
 
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, etc.)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, origin); // Return the origin string
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true
 }));
 app.use(express.json());
