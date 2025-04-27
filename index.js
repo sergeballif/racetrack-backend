@@ -8,33 +8,17 @@ dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
-
-// --- CORS SETUP ---
-// Support comma-separated list of origins in CORS_ORIGIN
-function parseOrigins(origins) {
-  if (!origins) return [];
-  return origins.split(',').map(o => o.trim()).filter(Boolean);
-}
-
-const allowedOrigins = parseOrigins(process.env.CORS_ORIGIN) || ['http://localhost:5173'];
-
-app.use(cors({
-  origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, etc.)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error('CORS not allowed from this origin: ' + origin), false);
-  },
-  credentials: true
-}));
-
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
     methods: ['GET', 'POST']
   }
 });
 
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  credentials: true
+}));
 app.use(express.json());
 
 app.get('/', (req, res) => {
