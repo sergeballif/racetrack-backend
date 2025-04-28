@@ -121,12 +121,13 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Teacher: restart game (reset all tokens and answers)
+  // Teacher: restart game (reset all tokens, answers, and quiz)
   socket.on('restart-game', () => {
-    for (const s of students.values()) {
-      s.square = 0;
-    }
+    students.clear();
     answers.clear();
+    currentQuiz = null;
+    currentPhase = 1;
+    currentQuestionIdx = 0;
     broadcastStudentList();
     broadcastVotes();
     // Emit a 'game-restarted' event for frontend to reset state
