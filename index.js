@@ -81,19 +81,51 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('student-move', ({ roll, id }) => {
+  socket.on('student-move', ({ roll, id, square }) => {
     if (!rateLimit(socket.id, 'student-move')) return;
-    // Support both legacy and new: id may be undefined (use socket.id)
-    const studentId = id || socket.id;
-    const s = students.get(studentId);
-    if (!s) return;
-    if (typeof roll !== 'number' || roll < 1 || roll > 6) return;
-    // Compute new square, allow unlimited laps (no cap at 96)
-    const prevSquare = s.square || 0;
-    let newSquare = prevSquare + roll;
+    
+    // Handle both direct square setting and dice roll movement
+    const targetId = id || socket.id;
+    const s = students.get(targetId);
+    if (!s) {
+      console.log(`[ERROR] Student not found for move: ${targetId}`);
+      return;
+    }
+    
+    const oldSquare = s.square || 0;
+    let newSquare = oldSquare;
+    
+    if (typeof square === 'number' && square >= 0) {
+      // Direct square update
+      newSquare = square;
+      console.log(`[DEBUG] Direct move: ${s.name} (${targetId}) from ${oldSquare} to ${newSquare}`);
+    } else if (typeof roll === 'number' && roll >= 1 && roll <= 6) {
+      // Dice roll movement
+      const currentSquare = typeof s.square === 'number' ? s.square : 0;
+      newSquare = (currentSquare + roll) % 96; // Wrap around after 96 squares
+      console.log(`[DEBUG] Dice roll move: ${s.name} (${targetId}) rolled ${roll}, from ${currentSquare} to ${newSquare}`);
+    } else {
+      console.log(`[DEBUG] Invalid move parameters: roll=${roll}, square=${square}, targetId=${targetId}`);
+      return;
+    }
+    
+    // Update the student's position
     s.square = newSquare;
-    // Emit move result to the student
-    io.to(socket.id).emit('student-move-result', { id: studentId, square: newSquare, roll });
+    
+    // Always broadcast the update to all clients
+    const update = { 
+      id: targetId, 
+      square: newSquare,
+      name: s.name,
+      roll: typeof roll === 'number' ? roll : undefined
+    };
+    
+    console.log(`[DEBUG] Broadcasting move update:`, update);
+    
+    // Send to all clients
+    io.emit('student-move-update', update);
+    
+    // Also update the student list
     broadcastStudentList();
   });
 
@@ -160,23 +192,34 @@ io.on('connection', (socket) => {
     io.emit('advance-phase', { nextPhase, nextQuestionIdx });
   });
 
-  // Admin: adjust a student's square
-  socket.on('admin-adjust-square', ({ id, square }) => {
-    if (!id || typeof square !== 'number' || square < 0 || square > 96) return;
-    if (!students.has(id)) return;
-    const s = students.get(id);
-    if (s) {
-      s.square = square;
-      broadcastStudentList();
-    }
-  });
-
   // --- Admin sync request: send current quiz and phase to admin clients ---
   socket.on('admin-sync-request', () => {
     if (currentQuiz && currentQuiz.content) {
       socket.emit('quiz-md-loaded', { content: currentQuiz.content });
       socket.emit('advance-phase', { nextPhase: currentPhase, nextQuestionIdx: currentQuestionIdx });
     }
+  });
+
+  // --- Admin adjust student square ---
+  socket.on('admin-adjust-square', ({ id, square }) => {
+    if (!rateLimit(socket.id, 'admin-adjust-square')) return;
+    if (!id || typeof square !== 'number' || square < 0) return;
+    
+    const student = students.get(id);
+    if (!student) return;
+    
+    // Update the student's position
+    student.square = square;
+    
+    // Broadcast the update to all clients
+    const update = { 
+      id, 
+      square,
+      name: student.name
+    };
+    
+    io.emit('student-move-update', update);
+    broadcastStudentList();
   });
 });
 
