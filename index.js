@@ -24,11 +24,25 @@ app.use(cors({
   origin: function(origin, callback) {
     // Allow requests with no origin (like mobile apps or curl)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) {
+    
+    // Allow requests from allowed origins
+    if (allowedOrigins && allowedOrigins.includes(origin)) {
       return callback(null, true);
-    } else {
-      return callback(new Error('Not allowed by CORS'));
     }
+    
+    // Allow requests from the backend's own domain (for deletion pages)
+    const backendUrl = process.env.RENDER_EXTERNAL_URL || process.env.BACKEND_URL;
+    if (backendUrl && origin === backendUrl) {
+      return callback(null, true);
+    }
+    
+    // For development, allow localhost
+    if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+      return callback(null, true);
+    }
+    
+    console.log('[CORS] Blocked origin:', origin);
+    return callback(new Error('Not allowed by CORS'));
   },
   credentials: true
 }));
@@ -235,54 +249,70 @@ app.get('/delete/:sessionSlug', async (req, res) => {
         
         <p><strong>⚠️ Warning:</strong> This action cannot be undone. The replay session and all associated data will be permanently deleted.</p>
         
-        <button onclick="deleteSession()" style="background: #dc2626; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">
-          🗑️ Delete Session
-        </button>
-        
-        <div id="result" style="margin-top: 20px;"></div>
-        
-        <script>
-          async function deleteSession() {
-            if (!confirm('Are you sure you want to delete this replay session?')) return;
-            
-            try {
-              console.log('Attempting to delete session: ${sessionSlug}');
-              const response = await fetch('/api/session/${sessionSlug}', { 
-                method: 'DELETE',
-                headers: {
-                  'Content-Type': 'application/json'
-                }
-              });
-              
-              console.log('Response status:', response.status);
-              
-              if (response.ok) {
-                const result = await response.json();
-                console.log('Delete successful:', result);
-                document.getElementById('result').innerHTML = '<div style="background: #dcfce7; color: #166534; padding: 10px; border-radius: 5px;">✅ Session deleted successfully!</div>';
-                document.querySelector('button').style.display = 'none';
-              } else {
-                let errorMessage;
-                try {
-                  const result = await response.json();
-                  errorMessage = result.message || result.error || 'Unknown error';
-                } catch {
-                  errorMessage = 'Server returned status ' + response.status;
-                }
-                console.error('Delete failed:', errorMessage);
-                document.getElementById('result').innerHTML = '<div style="background: #fee2e2; color: #dc2626; padding: 10px; border-radius: 5px;">❌ Error: ' + errorMessage + '</div>';
-              }
-            } catch (error) {
-              console.error('Delete error:', error);
-              document.getElementById('result').innerHTML = '<div style="background: #fee2e2; color: #dc2626; padding: 10px; border-radius: 5px;">❌ Error: ' + error.message + '</div>';
-            }
-          }
-        </script>
+        <form method="POST" action="/delete/${sessionSlug}" onsubmit="return confirm('Are you sure you want to delete this replay session?')">
+          <button type="submit" style="background: #dc2626; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">
+            🗑️ Delete Session
+          </button>
+        </form>
       </body></html>
     `);
   } catch (error) {
     console.error('[API] Error showing deletion page:', error);
     res.status(500).send('Server error');
+  }
+});
+
+// Handle form submission for session deletion
+app.post('/delete/:sessionSlug', async (req, res) => {
+  try {
+    const { sessionSlug } = req.params;
+    console.log(`[DELETE POST] Attempting to delete session: ${sessionSlug}`);
+    
+    const session = await gameDatabase.getGameSession(sessionSlug);
+    
+    if (!session) {
+      return res.send(`
+        <html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+          <h2>Session Not Found</h2>
+          <p>No replay session found with ID: <code>${sessionSlug}</code></p>
+          <p>It may have already been deleted.</p>
+        </body></html>
+      `);
+    }
+    
+    const deleted = await gameDatabase.deleteGameSession(session.id);
+    
+    if (deleted) {
+      console.log(`[DELETE POST] Successfully deleted session: ${sessionSlug}`);
+      res.send(`
+        <html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+          <h2>✅ Session Deleted Successfully</h2>
+          <div style="background: #dcfce7; color: #166534; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <strong>Deleted:</strong> ${session.quiz_filename}<br>
+            <strong>Session ID:</strong> ${sessionSlug}
+          </div>
+          <p>The replay session and all associated data have been permanently deleted.</p>
+        </body></html>
+      `);
+    } else {
+      console.log(`[DELETE POST] Failed to delete session: ${sessionSlug}`);
+      res.send(`
+        <html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+          <h2>❌ Deletion Failed</h2>
+          <p>Failed to delete session: <code>${sessionSlug}</code></p>
+          <p>Please try again or contact support.</p>
+        </body></html>
+      `);
+    }
+  } catch (error) {
+    console.error('[DELETE POST] Error deleting session:', error);
+    res.send(`
+      <html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+        <h2>❌ Error</h2>
+        <p>An error occurred while deleting the session.</p>
+        <p>Error: ${error.message}</p>
+      </body></html>
+    `);
   }
 });
 
