@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { sanitizeName, rateLimit } = require('./utils');
+const { initDatabase, createTables, gameDatabase, testConnection } = require('./database');
 dotenv.config();
 
 const app = express();
@@ -36,12 +37,25 @@ app.get('/', (req, res) => {
   res.send('Quiz Game Backend Running');
 });
 
+// Test database connection endpoint
+app.get('/api/db-test', async (req, res) => {
+  const isConnected = await testConnection();
+  res.json({ 
+    database: isConnected ? 'connected' : 'not available',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // --- Student state (in-memory, non-persistent; replace with DB for prod) ---
 const students = new Map(); // socket.id => { name, joinedAt, square }
 const answers = new Map(); // socket.id => answerIdx (integer)
 let currentQuiz = null; // { content: string }
 let currentPhase = 1;
 let currentQuestionIdx = 0;
+
+// --- Replay mode database state (optional, doesn't affect live gameplay) ---
+let currentGameSession = null; // { id, session_slug } for current live session
+initDatabase(); // Initialize database connection (safe if no DATABASE_URL)
 
 function broadcastStudentList() {
   const list = Array.from(students.entries()).map(([id, s]) => ({
@@ -224,6 +238,13 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`Server listening on port ${PORT}`);
+  
+  // Initialize database tables (safe if no database connection)
+  try {
+    await createTables();
+  } catch (error) {
+    console.log('[DATABASE] Table creation skipped (no database connection)');
+  }
 });
