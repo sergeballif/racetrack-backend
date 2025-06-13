@@ -40,6 +40,10 @@ async function sendReplayNotification(recipientEmail, sessionSlug, quizFilename)
     // Construct the replay URL
     const baseUrl = process.env.FRONTEND_URL || 'https://science.github.io/quiz-game'; // Update with your GitHub Pages URL
     const replayUrl = `${baseUrl}?session=${sessionSlug}&mode=replay`;
+    
+    // Construct the deletion URL 
+    const backendUrl = process.env.BACKEND_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:3000';
+    const deleteUrl = `${backendUrl}/api/session/${sessionSlug}`;
 
     // Clean up filename for display
     const displayName = quizFilename.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
@@ -70,6 +74,16 @@ async function sendReplayNotification(recipientEmail, sessionSlug, quizFilename)
         <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px 0;">
           <h4 style="margin: 0 0 10px 0; color: #92400e;">📧 For Students Who Missed Class:</h4>
           <p style="margin: 0; color: #92400e;">Share this URL with students who were absent. They can play through the quiz at their own pace and compete against the live session results!</p>
+        </div>
+
+        <div style="background: #fee2e2; border-left: 4px solid #ef4444; padding: 15px; margin: 20px 0;">
+          <h4 style="margin: 0 0 10px 0; color: #dc2626;">🗑️ Delete This Session (Optional):</h4>
+          <p style="margin: 0 0 10px 0; color: #dc2626;">If this was a practice round or you won't need this replay, you can delete it to save database space:</p>
+          <p style="margin: 0;">
+            <a href="${backendUrl}/delete/${sessionSlug}" style="color: #dc2626; text-decoration: underline;">
+              Click here to delete session
+            </a>
+          </p>
         </div>
 
         <div style="background: #f0f9ff; border-left: 4px solid #3b82f6; padding: 15px; margin: 20px 0;">

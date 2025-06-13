@@ -185,6 +185,99 @@ app.get('/api/session/:sessionSlug/players', async (req, res) => {
   }
 });
 
+// Simple deletion page for sessions
+app.get('/delete/:sessionSlug', async (req, res) => {
+  try {
+    const { sessionSlug } = req.params;
+    const session = await gameDatabase.getGameSession(sessionSlug);
+    
+    if (!session) {
+      return res.send(`
+        <html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+          <h2>Session Not Found</h2>
+          <p>No replay session found with ID: <code>${sessionSlug}</code></p>
+        </body></html>
+      `);
+    }
+    
+    res.send(`
+      <html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+        <h2>Delete Replay Session</h2>
+        <div style="background: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <strong>Quiz:</strong> ${session.quiz_filename}<br>
+          <strong>Created:</strong> ${new Date(session.created_at).toLocaleString()}<br>
+          <strong>Session ID:</strong> ${sessionSlug}
+        </div>
+        
+        <p><strong>⚠️ Warning:</strong> This action cannot be undone. The replay session and all associated data will be permanently deleted.</p>
+        
+        <button onclick="deleteSession()" style="background: #dc2626; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">
+          🗑️ Delete Session
+        </button>
+        
+        <div id="result" style="margin-top: 20px;"></div>
+        
+        <script>
+          async function deleteSession() {
+            if (!confirm('Are you sure you want to delete this replay session?')) return;
+            
+            try {
+              const response = await fetch('/api/session/${sessionSlug}', { method: 'DELETE' });
+              const result = await response.json();
+              
+              if (response.ok) {
+                document.getElementById('result').innerHTML = '<div style="background: #dcfce7; color: #166534; padding: 10px; border-radius: 5px;">✅ Session deleted successfully!</div>';
+                document.querySelector('button').style.display = 'none';
+              } else {
+                document.getElementById('result').innerHTML = '<div style="background: #fee2e2; color: #dc2626; padding: 10px; border-radius: 5px;">❌ Error: ' + result.message + '</div>';
+              }
+            } catch (error) {
+              document.getElementById('result').innerHTML = '<div style="background: #fee2e2; color: #dc2626; padding: 10px; border-radius: 5px;">❌ Error: ' + error.message + '</div>';
+            }
+          }
+        </script>
+      </body></html>
+    `);
+  } catch (error) {
+    console.error('[API] Error showing deletion page:', error);
+    res.status(500).send('Server error');
+  }
+});
+
+// Delete a replay session (for cleanup)
+app.delete('/api/session/:sessionSlug', async (req, res) => {
+  try {
+    const { sessionSlug } = req.params;
+    const session = await gameDatabase.getGameSession(sessionSlug);
+    
+    if (!session) {
+      return res.status(404).json({ 
+        error: 'Session not found',
+        message: `No replay session found with ID: ${sessionSlug}`
+      });
+    }
+    
+    const deleted = await gameDatabase.deleteGameSession(session.id);
+    
+    if (deleted) {
+      res.json({
+        message: 'Session deleted successfully',
+        session_slug: sessionSlug
+      });
+    } else {
+      res.status(500).json({
+        error: 'Failed to delete session'
+      });
+    }
+  } catch (error) {
+    console.error('[API] Error deleting session:', error);
+    res.status(500).json({ 
+      error: 'Server error',
+      message: 'Failed to delete session'
+    });
+  }
+});
+
 // --- Student state (in-memory, non-persistent; replace with DB for prod) ---
 const students = new Map(); // socket.id => { name, joinedAt, square }
 const answers = new Map(); // socket.id => answerIdx (integer)

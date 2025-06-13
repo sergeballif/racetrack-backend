@@ -226,6 +226,24 @@ const gameDatabase = {
       console.error('[DATABASE] Error getting final positions:', error);
       return [];
     }
+  },
+
+  // Delete a game session and all related data
+  async deleteGameSession(gameId) {
+    if (!pool || !gameId) return false;
+
+    try {
+      // Delete in correct order due to foreign key constraints
+      await pool.query('DELETE FROM final_positions WHERE game_id = $1', [gameId]);
+      await pool.query('DELETE FROM game_events WHERE game_id = $1', [gameId]);
+      await pool.query('DELETE FROM games WHERE id = $1', [gameId]);
+      
+      console.log(`[DATABASE] Deleted game session: ${gameId}`);
+      return true;
+    } catch (error) {
+      console.error('[DATABASE] Error deleting game session:', error);
+      return false;
+    }
   }
 };
 
