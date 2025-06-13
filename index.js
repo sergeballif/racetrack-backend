@@ -91,7 +91,11 @@ let currentQuestionIdx = 0;
 // --- Replay mode database state (optional, doesn't affect live gameplay) ---
 let currentGameSession = null; // { id, session_slug } for current live session
 initDatabase(); // Initialize database connection (safe if no DATABASE_URL)
-initEmailService(); // Initialize email service (safe if no email config)
+
+// Initialize email service with logging
+console.log('[STARTUP] Initializing email service...');
+const emailResult = initEmailService(); // Initialize email service (safe if no email config)
+console.log('[STARTUP] Email service result:', emailResult ? 'initialized' : 'not available');
 
 function broadcastStudentList() {
   const list = Array.from(students.entries()).map(([id, s]) => ({

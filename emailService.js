@@ -20,7 +20,8 @@ function initEmailService() {
       }
     });
 
-    console.log('[EMAIL] Email service initialized');
+    console.log('[EMAIL] Email service initialized successfully');
+    console.log(`[EMAIL] Using service: ${process.env.EMAIL_SERVICE}, user: ${process.env.EMAIL_USER}`);
     return transporter;
   } catch (error) {
     console.error('[EMAIL] Failed to initialize email service:', error);
@@ -123,15 +124,32 @@ How it works:
 
 // Test email configuration
 async function testEmailService() {
+  // First check if we have environment variables
+  if (!process.env.EMAIL_SERVICE || !process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    return { 
+      success: false, 
+      message: 'Email configuration missing: EMAIL_SERVICE, EMAIL_USER, or EMAIL_PASS not set' 
+    };
+  }
+
+  // Re-initialize transporter if it doesn't exist
   if (!transporter) {
-    return { success: false, message: 'Email service not configured' };
+    console.log('[EMAIL] Transporter not found, attempting to re-initialize...');
+    initEmailService();
+  }
+
+  if (!transporter) {
+    return { success: false, message: 'Email service initialization failed' };
   }
 
   try {
+    console.log('[EMAIL] Testing connection...');
     await transporter.verify();
-    return { success: true, message: 'Email service is working' };
+    console.log('[EMAIL] Connection test successful');
+    return { success: true, message: 'Email service is working correctly' };
   } catch (error) {
-    return { success: false, message: error.message };
+    console.error('[EMAIL] Connection test failed:', error);
+    return { success: false, message: `Connection failed: ${error.message}` };
   }
 }
 
