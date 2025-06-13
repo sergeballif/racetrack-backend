@@ -185,6 +185,30 @@ app.get('/api/session/:sessionSlug/players', async (req, res) => {
   }
 });
 
+// Test endpoint to check if session exists
+app.get('/api/session/:sessionSlug/exists', async (req, res) => {
+  try {
+    const { sessionSlug } = req.params;
+    const session = await gameDatabase.getGameSession(sessionSlug);
+    
+    res.json({
+      exists: !!session,
+      session_slug: sessionSlug,
+      session: session ? {
+        id: session.id,
+        quiz_filename: session.quiz_filename,
+        created_at: session.created_at
+      } : null
+    });
+  } catch (error) {
+    console.error('[API] Error checking session existence:', error);
+    res.status(500).json({ 
+      error: 'Server error',
+      message: 'Failed to check session existence'
+    });
+  }
+});
+
 // Simple deletion page for sessions
 app.get('/delete/:sessionSlug', async (req, res) => {
   try {
@@ -222,16 +246,34 @@ app.get('/delete/:sessionSlug', async (req, res) => {
             if (!confirm('Are you sure you want to delete this replay session?')) return;
             
             try {
-              const response = await fetch('/api/session/${sessionSlug}', { method: 'DELETE' });
-              const result = await response.json();
+              console.log('Attempting to delete session: ${sessionSlug}');
+              const response = await fetch('/api/session/${sessionSlug}', { 
+                method: 'DELETE',
+                headers: {
+                  'Content-Type': 'application/json'
+                }
+              });
+              
+              console.log('Response status:', response.status);
               
               if (response.ok) {
+                const result = await response.json();
+                console.log('Delete successful:', result);
                 document.getElementById('result').innerHTML = '<div style="background: #dcfce7; color: #166534; padding: 10px; border-radius: 5px;">✅ Session deleted successfully!</div>';
                 document.querySelector('button').style.display = 'none';
               } else {
-                document.getElementById('result').innerHTML = '<div style="background: #fee2e2; color: #dc2626; padding: 10px; border-radius: 5px;">❌ Error: ' + result.message + '</div>';
+                let errorMessage;
+                try {
+                  const result = await response.json();
+                  errorMessage = result.message || result.error || 'Unknown error';
+                } catch {
+                  errorMessage = 'Server returned status ' + response.status;
+                }
+                console.error('Delete failed:', errorMessage);
+                document.getElementById('result').innerHTML = '<div style="background: #fee2e2; color: #dc2626; padding: 10px; border-radius: 5px;">❌ Error: ' + errorMessage + '</div>';
               }
             } catch (error) {
+              console.error('Delete error:', error);
               document.getElementById('result').innerHTML = '<div style="background: #fee2e2; color: #dc2626; padding: 10px; border-radius: 5px;">❌ Error: ' + error.message + '</div>';
             }
           }
@@ -248,32 +290,41 @@ app.get('/delete/:sessionSlug', async (req, res) => {
 app.delete('/api/session/:sessionSlug', async (req, res) => {
   try {
     const { sessionSlug } = req.params;
+    console.log(`[DELETE] Attempting to delete session: ${sessionSlug}`);
+    
     const session = await gameDatabase.getGameSession(sessionSlug);
+    console.log(`[DELETE] Session found:`, session ? 'yes' : 'no');
     
     if (!session) {
+      console.log(`[DELETE] Session not found: ${sessionSlug}`);
       return res.status(404).json({ 
         error: 'Session not found',
         message: `No replay session found with ID: ${sessionSlug}`
       });
     }
     
+    console.log(`[DELETE] Attempting to delete session ID: ${session.id}`);
     const deleted = await gameDatabase.deleteGameSession(session.id);
+    console.log(`[DELETE] Deletion result:`, deleted);
     
     if (deleted) {
+      console.log(`[DELETE] Successfully deleted session: ${sessionSlug}`);
       res.json({
         message: 'Session deleted successfully',
         session_slug: sessionSlug
       });
     } else {
+      console.log(`[DELETE] Failed to delete session: ${sessionSlug}`);
       res.status(500).json({
-        error: 'Failed to delete session'
+        error: 'Failed to delete session',
+        message: 'Database deletion operation failed'
       });
     }
   } catch (error) {
-    console.error('[API] Error deleting session:', error);
+    console.error('[DELETE] Error deleting session:', error);
     res.status(500).json({ 
       error: 'Server error',
-      message: 'Failed to delete session'
+      message: `Failed to delete session: ${error.message}`
     });
   }
 });
