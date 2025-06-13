@@ -5,6 +5,7 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const { sanitizeName, rateLimit } = require('./utils');
 const { initDatabase, createTables, gameDatabase, testConnection } = require('./database');
+const { initEmailService, sendReplayNotification, testEmailService } = require('./emailService');
 dotenv.config();
 
 const app = express();
@@ -46,6 +47,16 @@ app.get('/api/db-test', async (req, res) => {
   });
 });
 
+// Test email service endpoint
+app.get('/api/email-test', async (req, res) => {
+  const emailStatus = await testEmailService();
+  res.json({
+    email: emailStatus.success ? 'configured' : 'not available',
+    message: emailStatus.message,
+    timestamp: new Date().toISOString()
+  });
+});
+
 // --- Student state (in-memory, non-persistent; replace with DB for prod) ---
 const students = new Map(); // socket.id => { name, joinedAt, square }
 const answers = new Map(); // socket.id => answerIdx (integer)
@@ -56,6 +67,7 @@ let currentQuestionIdx = 0;
 // --- Replay mode database state (optional, doesn't affect live gameplay) ---
 let currentGameSession = null; // { id, session_slug } for current live session
 initDatabase(); // Initialize database connection (safe if no DATABASE_URL)
+initEmailService(); // Initialize email service (safe if no email config)
 
 function broadcastStudentList() {
   const list = Array.from(students.entries()).map(([id, s]) => ({
@@ -126,6 +138,22 @@ io.on('connection', (socket) => {
     // Update the student's position
     s.square = newSquare;
     
+    // Record student movement for replay mode (doesn't affect live game)
+    if (currentGameSession && oldSquare !== newSquare) {
+      gameDatabase.logEvent(currentGameSession.id, 'student_move', {
+        student_id: targetId,
+        student_name: s.name,
+        from_square: oldSquare,
+        to_square: newSquare,
+        roll: typeof roll === 'number' ? roll : null,
+        question_idx: currentQuestionIdx,
+        phase: currentPhase,
+        timestamp: new Date().toISOString()
+      }).catch(err => {
+        console.log('[REPLAY] Error logging student move:', err.message);
+      });
+    }
+    
     // Always broadcast the update to all clients
     const update = { 
       id: targetId, 
@@ -147,6 +175,22 @@ io.on('connection', (socket) => {
     if (!rateLimit(socket.id, 'student-answer')) return;
     console.log('[DEBUG] student-answer received:', answerIdx, 'from', socket.id);
     if (typeof answerIdx !== 'number' || answerIdx < 0 || answerIdx > 3) return;
+    
+    // Record student answer for replay mode (doesn't affect live game)
+    if (currentGameSession) {
+      const student = students.get(socket.id);
+      gameDatabase.logEvent(currentGameSession.id, 'student_answer', {
+        student_id: socket.id,
+        student_name: student?.name || 'Unknown',
+        answer_idx: answerIdx,
+        question_idx: currentQuestionIdx,
+        phase: currentPhase,
+        timestamp: new Date().toISOString()
+      }).catch(err => {
+        console.log('[REPLAY] Error logging student answer:', err.message);
+      });
+    }
+    
     answers.set(socket.id, answerIdx);
     broadcastVotes();
   });
@@ -175,6 +219,20 @@ io.on('connection', (socket) => {
 
   // Teacher: restart game (reset all tokens, answers, and quiz)
   socket.on('restart-game', () => {
+    // Complete current session if it exists (for replay mode)
+    if (currentGameSession) {
+      const finalPositions = Array.from(students.entries()).map(([id, s]) => ({
+        id,
+        name: s.name,
+        square: s.square || 0,
+        totalCorrect: 0 // TODO: Track correct answers
+      }));
+      gameDatabase.completeGame(currentGameSession.id, finalPositions).catch(err => {
+        console.log('[REPLAY] Error completing session:', err.message);
+      });
+      currentGameSession = null;
+    }
+    
     students.clear();
     answers.clear();
     currentQuiz = null;
@@ -187,11 +245,39 @@ io.on('connection', (socket) => {
   });
 
   // Teacher: load quiz markdown and broadcast to all clients
-  socket.on('load-quiz-md', ({ content }) => {
+  socket.on('load-quiz-md', ({ content, filename }) => {
     // Limit quiz file size and validate type
     if (typeof content !== 'string' || content.length > 100000) return;
     console.log('[DEBUG] Loaded quiz markdown, length:', content?.length);
-    // Broadcast to all clients so everyone loads the same quiz
+    
+    // Create database session for replay mode (doesn't affect live game)
+    if (filename) {
+      gameDatabase.createGameSession(filename, content).then(session => {
+        if (session) {
+          currentGameSession = session;
+          console.log(`[REPLAY] Session created: ${session.session_slug}`);
+          
+          // Send email notification with replay URL
+          const teacherEmail = process.env.TEACHER_EMAIL;
+          if (teacherEmail) {
+            sendReplayNotification(teacherEmail, session.session_slug, filename)
+              .then(sent => {
+                if (sent) {
+                  console.log(`[EMAIL] Replay notification sent to ${teacherEmail}`);
+                } else {
+                  console.log(`[EMAIL] Failed to send replay notification`);
+                }
+              });
+          } else {
+            console.log('[EMAIL] No TEACHER_EMAIL configured, skipping notification');
+          }
+        }
+      }).catch(err => {
+        console.log('[REPLAY] Session creation failed (continuing without replay):', err.message);
+      });
+    }
+    
+    // Broadcast to all clients so everyone loads the same quiz (unchanged)
     currentQuiz = { content };
     currentPhase = 1;
     currentQuestionIdx = 0;
@@ -201,6 +287,18 @@ io.on('connection', (socket) => {
   // Teacher: advance phase and broadcast to all clients
   socket.on('advance-phase', ({ nextPhase, nextQuestionIdx }) => {
     console.log('[DEBUG] advance-phase received:', { nextPhase, nextQuestionIdx });
+    
+    // Record phase advancement for replay mode (doesn't affect live game)
+    if (currentGameSession) {
+      gameDatabase.logEvent(currentGameSession.id, 'phase_advance', {
+        phase: nextPhase,
+        question_idx: nextQuestionIdx,
+        timestamp: new Date().toISOString()
+      }).catch(err => {
+        console.log('[REPLAY] Error logging phase advance:', err.message);
+      });
+    }
+    
     currentPhase = nextPhase;
     currentQuestionIdx = nextQuestionIdx;
     io.emit('advance-phase', { nextPhase, nextQuestionIdx });
