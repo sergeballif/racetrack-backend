@@ -12,7 +12,7 @@ function initEmailService() {
 
   try {
     // Create transporter for Gmail or other services
-    transporter = nodemailer.createTransporter({
+    transporter = nodemailer.createTransport({
       service: process.env.EMAIL_SERVICE, // 'gmail', 'yahoo', 'outlook', etc.
       auth: {
         user: process.env.EMAIL_USER,
