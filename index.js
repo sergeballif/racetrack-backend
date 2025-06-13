@@ -38,6 +38,19 @@ app.get('/', (req, res) => {
   res.send('Quiz Game Backend Running');
 });
 
+// Debug environment variables
+app.get('/api/env-debug', (req, res) => {
+  res.json({
+    EMAIL_SERVICE: process.env.EMAIL_SERVICE || 'not set',
+    EMAIL_USER: process.env.EMAIL_USER || 'not set',
+    EMAIL_PASS: process.env.EMAIL_PASS ? 'configured' : 'not set',
+    TEACHER_EMAIL: process.env.TEACHER_EMAIL || 'not set',
+    FRONTEND_URL: process.env.FRONTEND_URL || 'not set',
+    DATABASE_URL: process.env.DATABASE_URL ? 'configured' : 'not set',
+    NODE_ENV: process.env.NODE_ENV || 'not set'
+  });
+});
+
 // Test database connection endpoint
 app.get('/api/db-test', async (req, res) => {
   const isConnected = await testConnection();
@@ -50,9 +63,20 @@ app.get('/api/db-test', async (req, res) => {
 // Test email service endpoint
 app.get('/api/email-test', async (req, res) => {
   const emailStatus = await testEmailService();
+  
+  // Debug: show what environment variables are available
+  const envDebug = {
+    EMAIL_SERVICE: process.env.EMAIL_SERVICE ? 'set' : 'missing',
+    EMAIL_USER: process.env.EMAIL_USER ? 'set' : 'missing', 
+    EMAIL_PASS: process.env.EMAIL_PASS ? 'set' : 'missing',
+    TEACHER_EMAIL: process.env.TEACHER_EMAIL ? 'set' : 'missing',
+    FRONTEND_URL: process.env.FRONTEND_URL ? 'set' : 'missing'
+  };
+  
   res.json({
     email: emailStatus.success ? 'configured' : 'not available',
     message: emailStatus.message,
+    environment_variables: envDebug,
     timestamp: new Date().toISOString()
   });
 });
