@@ -208,6 +208,24 @@ const gameDatabase = {
       console.error('[DATABASE] Error completing game:', error);
       return false;
     }
+  },
+
+  // Get final positions for a game session
+  async getFinalPositions(gameId) {
+    if (!pool) return [];
+
+    try {
+      const result = await pool.query(`
+        SELECT * FROM final_positions 
+        WHERE game_id = $1 
+        ORDER BY final_square DESC, student_name ASC
+      `, [gameId]);
+
+      return result.rows;
+    } catch (error) {
+      console.error('[DATABASE] Error getting final positions:', error);
+      return [];
+    }
   }
 };
 

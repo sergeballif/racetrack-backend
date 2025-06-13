@@ -81,6 +81,110 @@ app.get('/api/email-test', async (req, res) => {
   });
 });
 
+// --- Replay Mode API Endpoints ---
+
+// Get session data for replay mode
+app.get('/api/session/:sessionSlug', async (req, res) => {
+  try {
+    const { sessionSlug } = req.params;
+    const session = await gameDatabase.getGameSession(sessionSlug);
+    
+    if (!session) {
+      return res.status(404).json({ 
+        error: 'Session not found',
+        message: `No replay session found with ID: ${sessionSlug}`
+      });
+    }
+    
+    res.json({
+      id: session.id,
+      session_slug: session.session_slug,
+      quiz_filename: session.quiz_filename,
+      quiz_content: session.quiz_content,
+      created_at: session.created_at,
+      completed_at: session.completed_at,
+      status: session.status
+    });
+  } catch (error) {
+    console.error('[API] Error fetching session:', error);
+    res.status(500).json({ 
+      error: 'Server error',
+      message: 'Failed to load session data'
+    });
+  }
+});
+
+// Get all events for a replay session
+app.get('/api/session/:sessionSlug/events', async (req, res) => {
+  try {
+    const { sessionSlug } = req.params;
+    const session = await gameDatabase.getGameSession(sessionSlug);
+    
+    if (!session) {
+      return res.status(404).json({ 
+        error: 'Session not found',
+        message: `No replay session found with ID: ${sessionSlug}`
+      });
+    }
+    
+    const events = await gameDatabase.getGameEvents(session.id);
+    
+    res.json({
+      session_id: session.id,
+      session_slug: sessionSlug,
+      total_events: events.length,
+      events: events.map(event => ({
+        id: event.id,
+        event_type: event.event_type,
+        event_data: event.event_data,
+        timestamp: event.timestamp
+      }))
+    });
+  } catch (error) {
+    console.error('[API] Error fetching session events:', error);
+    res.status(500).json({ 
+      error: 'Server error',
+      message: 'Failed to load session events'
+    });
+  }
+});
+
+// Get final positions for a replay session
+app.get('/api/session/:sessionSlug/players', async (req, res) => {
+  try {
+    const { sessionSlug } = req.params;
+    const session = await gameDatabase.getGameSession(sessionSlug);
+    
+    if (!session) {
+      return res.status(404).json({ 
+        error: 'Session not found',
+        message: `No replay session found with ID: ${sessionSlug}`
+      });
+    }
+    
+    // Get final positions from database
+    const finalPositions = await gameDatabase.getFinalPositions(session.id);
+    
+    res.json({
+      session_id: session.id,
+      session_slug: sessionSlug,
+      total_players: finalPositions.length,
+      players: finalPositions.map(player => ({
+        student_id: player.student_id,
+        student_name: player.student_name,
+        final_square: player.final_square,
+        total_correct: player.total_correct
+      }))
+    });
+  } catch (error) {
+    console.error('[API] Error fetching session players:', error);
+    res.status(500).json({ 
+      error: 'Server error',
+      message: 'Failed to load session players'
+    });
+  }
+});
+
 // --- Student state (in-memory, non-persistent; replace with DB for prod) ---
 const students = new Map(); // socket.id => { name, joinedAt, square }
 const answers = new Map(); // socket.id => answerIdx (integer)
