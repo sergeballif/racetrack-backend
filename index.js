@@ -362,6 +362,7 @@ app.delete('/api/session/:sessionSlug', async (req, res) => {
 // --- Student state (in-memory, non-persistent; replace with DB for prod) ---
 const students = new Map(); // socket.id => { name, joinedAt, square }
 const answers = new Map(); // socket.id => answerIdx (integer)
+const disconnectTimers = new Map(); // socket.id => timeout for cleanup delay
 let currentQuiz = null; // { content: string }
 let currentPhase = 1;
 let currentQuestionIdx = 0;
@@ -400,9 +401,21 @@ io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
   socket.on('student-join', ({ name }) => {
-    if (!rateLimit(socket.id, 'student-join', 2)) return;
+    // Increase rate limit for large sessions
+    const maxStudents = students.size;
+    const rateMultiplier = Math.max(1, Math.ceil(maxStudents / 25));
+    if (!rateLimit(socket.id, 'student-join', 2 * rateMultiplier)) return;
+    
     const cleanName = sanitizeName(name);
     if (!cleanName) return;
+    
+    // Cancel any pending cleanup for this socket
+    if (disconnectTimers.has(socket.id)) {
+      clearTimeout(disconnectTimers.get(socket.id));
+      disconnectTimers.delete(socket.id);
+      console.log(`Student ${cleanName} rejoined, cancelled cleanup (${socket.id})`);
+    }
+    
     students.set(socket.id, { name: cleanName, joinedAt: Date.now(), square: 0 });
     console.log(`Student joined: ${cleanName} (${socket.id})`);
     broadcastStudentList();
@@ -501,16 +514,54 @@ io.on('connection', (socket) => {
     broadcastVotes();
   });
 
-  socket.on('disconnect', () => {
-    students.delete(socket.id);
-    answers.delete(socket.id);
-    console.log('User disconnected:', socket.id);
-    broadcastStudentList();
-    broadcastVotes();
+  socket.on('disconnect', (reason) => {
+    const student = students.get(socket.id);
+    const studentName = student ? student.name : 'Unknown';
+    console.log(`Student ${studentName} disconnected: ${reason} (${socket.id})`);
+    
+    // For explicit client disconnects, clean up immediately
+    if (reason === 'client namespace disconnect') {
+      students.delete(socket.id);
+      answers.delete(socket.id);
+      if (disconnectTimers.has(socket.id)) {
+        clearTimeout(disconnectTimers.get(socket.id));
+        disconnectTimers.delete(socket.id);
+      }
+      broadcastStudentList();
+      broadcastVotes();
+      return;
+    }
+    
+    // For transport errors and other issues, wait before cleanup to allow reconnection
+    disconnectTimers.set(socket.id, setTimeout(() => {
+      if (students.has(socket.id)) {
+        console.log(`Cleaning up student ${studentName} after disconnect timeout (${socket.id})`);
+        students.delete(socket.id);
+        answers.delete(socket.id);
+        broadcastStudentList();
+        broadcastVotes();
+      }
+      disconnectTimers.delete(socket.id);
+    }, 15000)); // 15 second grace period for reconnection
   });
 
   socket.on('ping-from-client', (msg) => {
     socket.emit('pong-from-server', `Pong! Server received: ${msg}`);
+  });
+
+  // Student state synchronization - check if student exists in backend
+  socket.on('student-sync-request', () => {
+    const student = students.get(socket.id);
+    if (student) {
+      socket.emit('student-sync-response', { 
+        exists: true, 
+        data: student 
+      });
+    } else {
+      socket.emit('student-sync-response', { 
+        exists: false 
+      });
+    }
   });
 
   // Teacher: replace student name with 'Trouble' for all clients
@@ -525,6 +576,12 @@ io.on('connection', (socket) => {
 
   // Teacher: restart game (reset all tokens, answers, and quiz)
   socket.on('restart-game', () => {
+    // Clear all disconnect timers
+    for (const timer of disconnectTimers.values()) {
+      clearTimeout(timer);
+    }
+    disconnectTimers.clear();
+    
     // Complete current session if it exists (for replay mode)
     if (currentGameSession) {
       const finalPositions = Array.from(students.entries()).map(([id, s]) => ({
