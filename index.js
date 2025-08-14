@@ -367,6 +367,11 @@ let currentQuiz = null; // { content: string }
 let currentPhase = 1;
 let currentQuestionIdx = 0;
 
+// --- Quizmaster state ---
+let quizmasterEnabled = true;
+let quizmasterName = "Math Dad";
+let quizmasterSquare = 0;
+
 // --- Replay mode database state (optional, doesn't affect live gameplay) ---
 let currentGameSession = null; // { id, session_slug } for current live session
 initDatabase(); // Initialize database connection (safe if no DATABASE_URL)
@@ -384,6 +389,14 @@ function broadcastStudentList() {
     square: s.square || 0 // default to 0 if not set
   }));
   io.emit('student-list', list);
+}
+
+function broadcastQuizmasterState() {
+  io.emit('quizmaster-state', {
+    enabled: quizmasterEnabled,
+    name: quizmasterName,
+    square: quizmasterSquare
+  });
 }
 
 function broadcastVotes() {
@@ -601,8 +614,10 @@ io.on('connection', (socket) => {
     currentQuiz = null;
     currentPhase = 1;
     currentQuestionIdx = 0;
+    quizmasterSquare = 0; // Reset quizmaster position
     broadcastStudentList();
     broadcastVotes();
+    broadcastQuizmasterState();
     // Emit a 'game-restarted' event for frontend to reset state
     io.emit('game-restarted');
   });
@@ -648,8 +663,31 @@ io.on('connection', (socket) => {
   });
 
   // Teacher: advance phase and broadcast to all clients
-  socket.on('advance-phase', ({ nextPhase, nextQuestionIdx }) => {
-    console.log('[DEBUG] advance-phase received:', { nextPhase, nextQuestionIdx });
+  socket.on('advance-phase', ({ nextPhase, nextQuestionIdx, correctIdxs }) => {
+    console.log('[DEBUG] advance-phase received:', { nextPhase, nextQuestionIdx, correctIdxs });
+    
+    // If advancing from phase 2 to 3, calculate quizmaster movement (always update position, regardless of enabled state)
+    if (currentPhase === 2 && nextPhase === 3) {
+      const totalAnswers = Array.from(answers.values()).filter(idx => typeof idx === 'number').length;
+      
+      if (totalAnswers > 0 && correctIdxs && Array.isArray(correctIdxs)) {
+        // Count wrong answers by checking against correct answer indices
+        const wrongAnswers = Array.from(answers.values()).filter(idx => 
+          typeof idx === 'number' && !correctIdxs.includes(idx)
+        ).length;
+        
+        const wrongRatio = wrongAnswers / totalAnswers;
+        const quizmasterMove = Math.round(wrongRatio * 6);
+        
+        console.log('[QUIZMASTER] Total answers:', totalAnswers, 'Wrong answers:', wrongAnswers, 'Wrong ratio:', wrongRatio, 'Move:', quizmasterMove, 'Enabled:', quizmasterEnabled);
+        
+        if (quizmasterMove > 0) {
+          quizmasterSquare = (quizmasterSquare + quizmasterMove) % 96;
+          // Always broadcast state updates so frontend stays in sync
+          broadcastQuizmasterState();
+        }
+      }
+    }
     
     // Record phase advancement for replay mode (doesn't affect live game)
     if (currentGameSession) {
@@ -695,6 +733,46 @@ io.on('connection', (socket) => {
     
     io.emit('student-move-update', update);
     broadcastStudentList();
+  });
+
+  // --- Admin quizmaster controls ---
+  socket.on('admin-toggle-quizmaster', ({ enabled }) => {
+    if (!rateLimit(socket.id, 'admin-toggle-quizmaster')) return;
+    if (typeof enabled !== 'boolean') return;
+    
+    quizmasterEnabled = enabled;
+    console.log('[QUIZMASTER] Enabled:', enabled);
+    broadcastQuizmasterState();
+  });
+
+  socket.on('admin-set-quizmaster-name', ({ name }) => {
+    if (!rateLimit(socket.id, 'admin-set-quizmaster-name')) return;
+    if (typeof name !== 'string' || name.length === 0 || name.length > 50) return;
+    
+    const cleanName = sanitizeName(name);
+    if (!cleanName) return;
+    
+    quizmasterName = cleanName;
+    console.log('[QUIZMASTER] Name set to:', cleanName);
+    broadcastQuizmasterState();
+  });
+
+  socket.on('admin-adjust-quizmaster-square', ({ square }) => {
+    if (!rateLimit(socket.id, 'admin-adjust-quizmaster-square')) return;
+    if (typeof square !== 'number' || square < 0 || square > 96) return;
+    
+    quizmasterSquare = square;
+    console.log('[QUIZMASTER] Square adjusted to:', square);
+    broadcastQuizmasterState();
+  });
+
+  // Send current quizmaster state to new connections
+  socket.on('get-quizmaster-state', () => {
+    socket.emit('quizmaster-state', {
+      enabled: quizmasterEnabled,
+      name: quizmasterName,
+      square: quizmasterSquare
+    });
   });
 });
 
