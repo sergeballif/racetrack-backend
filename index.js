@@ -728,7 +728,8 @@ io.on('connection', (socket) => {
     const update = { 
       id, 
       square,
-      name: student.name
+      name: student.name,
+      isAdminAdjustment: true // Flag to indicate this was an admin adjustment
     };
     
     io.emit('student-move-update', update);
