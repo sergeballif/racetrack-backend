@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { sanitizeName, rateLimit } = require('./utils');
+const { buildDisconnectInfo, sendDisconnectWebhook } = require('./disconnectDiagnostics');
 const { initDatabase, createTables, gameDatabase, testConnection } = require('./database');
 const { initEmailService, sendReplayNotification, testEmailService } = require('./emailService');
 dotenv.config();
@@ -11,6 +12,8 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
+  pingInterval: 25000,
+  pingTimeout: 60000,
   cors: {
     origin: process.env.CORS_ORIGIN?.split(',').map(s => s.trim()),
     methods: ['GET', 'POST']
@@ -360,9 +363,15 @@ app.delete('/api/session/:sessionSlug', async (req, res) => {
 });
 
 // --- Student state (in-memory, non-persistent; replace with DB for prod) ---
-const students = new Map(); // socket.id => { name, joinedAt, square }
-const answers = new Map(); // socket.id => answerIdx (integer)
-const disconnectTimers = new Map(); // socket.id => timeout for cleanup delay
+// Map of persistent student_id => { name, joinedAt, square, sockets:Set<socket.id> }
+const students = new Map();
+// Map of socket.id => student_id for quick lookup
+const socketToStudent = new Map();
+// Map of student_id => answerIdx (integer)
+const answers = new Map();
+// Map of student_id => timeout for cleanup delay
+const disconnectTimers = new Map();
+const DISCONNECT_GRACE_MS = parseInt(process.env.DISCONNECT_GRACE_MS || '15000', 10);
 let currentQuiz = null; // { content: string }
 let currentPhase = 1;
 let currentQuestionIdx = 0;
@@ -413,7 +422,7 @@ function broadcastVotes() {
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
-  socket.on('student-join', ({ name }) => {
+  socket.on('student-join', ({ name, student_id }) => {
     // Increase rate limit for large sessions
     const maxStudents = students.size;
     const rateMultiplier = Math.max(1, Math.ceil(maxStudents / 25));
@@ -421,16 +430,27 @@ io.on('connection', (socket) => {
     
     const cleanName = sanitizeName(name);
     if (!cleanName) return;
-    
-    // Cancel any pending cleanup for this socket
-    if (disconnectTimers.has(socket.id)) {
-      clearTimeout(disconnectTimers.get(socket.id));
-      disconnectTimers.delete(socket.id);
-      console.log(`Student ${cleanName} rejoined, cancelled cleanup (${socket.id})`);
+
+    const studentId = student_id || socket.id;
+
+    // Cancel any pending cleanup for this student
+    if (disconnectTimers.has(studentId)) {
+      clearTimeout(disconnectTimers.get(studentId));
+      disconnectTimers.delete(studentId);
+      console.log(`Student ${cleanName} rejoined, cancelled cleanup (${studentId})`);
     }
-    
-    students.set(socket.id, { name: cleanName, joinedAt: Date.now(), square: 0 });
-    console.log(`Student joined: ${cleanName} (${socket.id})`);
+
+    let student = students.get(studentId);
+    if (student) {
+      // Existing student reconnecting; just add this socket
+      student.sockets.add(socket.id);
+    } else {
+      student = { name: cleanName, joinedAt: Date.now(), square: 0, sockets: new Set([socket.id]) };
+      students.set(studentId, student);
+    }
+
+    socketToStudent.set(socket.id, studentId);
+    console.log(`Student joined: ${cleanName} (${studentId}) via socket ${socket.id}`);
     broadcastStudentList();
     // Sync current quiz and phase if available
     if (currentQuiz && currentQuiz.content) {
@@ -441,9 +461,9 @@ io.on('connection', (socket) => {
 
   socket.on('student-move', ({ roll, id, square }) => {
     if (!rateLimit(socket.id, 'student-move')) return;
-    
+
     // Handle both direct square setting and dice roll movement
-    const targetId = id || socket.id;
+    const targetId = id || socketToStudent.get(socket.id);
     const s = students.get(targetId);
     if (!s) {
       console.log(`[ERROR] Student not found for move: ${targetId}`);
@@ -505,14 +525,15 @@ io.on('connection', (socket) => {
 
   socket.on('student-answer', ({ answerIdx }) => {
     if (!rateLimit(socket.id, 'student-answer')) return;
-    console.log('[DEBUG] student-answer received:', answerIdx, 'from', socket.id);
-    if (typeof answerIdx !== 'number' || answerIdx < 0 || answerIdx > 3) return;
-    
+    const studentId = socketToStudent.get(socket.id);
+    console.log('[DEBUG] student-answer received:', answerIdx, 'from', studentId);
+    if (typeof answerIdx !== 'number' || answerIdx < 0 || answerIdx > 3 || !studentId) return;
+
     // Record student answer for replay mode (doesn't affect live game)
     if (currentGameSession) {
-      const student = students.get(socket.id);
+      const student = students.get(studentId);
       gameDatabase.logEvent(currentGameSession.id, 'student_answer', {
-        student_id: socket.id,
+        student_id: studentId,
         student_name: student?.name || 'Unknown',
         answer_idx: answerIdx,
         question_idx: currentQuestionIdx,
@@ -522,40 +543,67 @@ io.on('connection', (socket) => {
         console.log('[REPLAY] Error logging student answer:', err.message);
       });
     }
-    
-    answers.set(socket.id, answerIdx);
+
+    answers.set(studentId, answerIdx);
     broadcastVotes();
   });
 
   socket.on('disconnect', (reason) => {
-    const student = students.get(socket.id);
+    const studentId = socketToStudent.get(socket.id);
+    const student = students.get(studentId);
     const studentName = student ? student.name : 'Unknown';
-    console.log(`Student ${studentName} disconnected: ${reason} (${socket.id})`);
-    
-    // For explicit client disconnects, clean up immediately
-    if (reason === 'client namespace disconnect') {
-      students.delete(socket.id);
-      answers.delete(socket.id);
-      if (disconnectTimers.has(socket.id)) {
-        clearTimeout(disconnectTimers.get(socket.id));
-        disconnectTimers.delete(socket.id);
-      }
-      broadcastStudentList();
-      broadcastVotes();
+    const priorSocketCount = student ? student.sockets.size : 0;
+    const hadAnswer = studentId ? answers.has(studentId) : false;
+
+    socketToStudent.delete(socket.id);
+    if (student) {
+      student.sockets.delete(socket.id);
+    }
+
+    const remainingSockets = student ? student.sockets.size : 0;
+    const disconnectInfo = buildDisconnectInfo(socket, reason, studentName, {
+      studentId,
+      priorSocketCount,
+      remainingSockets,
+      hadStudentRecord: Boolean(student),
+      hasAnswer: hadAnswer,
+      square: student?.square ?? null,
+      totalStudents: students.size,
+      phase: currentPhase,
+      questionIdx: currentQuestionIdx,
+      cleanupScheduled: remainingSockets === 0,
+      cleanupDelayMs: DISCONNECT_GRACE_MS,
+      sessionSlug: currentGameSession?.session_slug ?? null,
+    });
+
+    console.warn('[DISCONNECT]', disconnectInfo);
+    sendDisconnectWebhook(disconnectInfo);
+
+    if (!student) {
       return;
     }
-    
-    // For transport errors and other issues, wait before cleanup to allow reconnection
-    disconnectTimers.set(socket.id, setTimeout(() => {
-      if (students.has(socket.id)) {
-        console.log(`Cleaning up student ${studentName} after disconnect timeout (${socket.id})`);
-        students.delete(socket.id);
-        answers.delete(socket.id);
-        broadcastStudentList();
-        broadcastVotes();
-      }
-      disconnectTimers.delete(socket.id);
-    }, 15000)); // 15 second grace period for reconnection
+
+    if (remainingSockets === 0) {
+      console.log(`[DISCONNECT] Scheduling cleanup for ${studentName} (${studentId}) in ${DISCONNECT_GRACE_MS}ms (reason: ${reason})`);
+      // Start a timer to allow reconnection before cleanup
+      disconnectTimers.set(studentId, setTimeout(() => {
+        const record = students.get(studentId);
+        if (record && record.sockets.size === 0) {
+          const hadAnswerAtCleanup = answers.has(studentId);
+          const lastSquare = record?.square ?? 0;
+          console.log(`[DISCONNECT] Grace period expired for ${studentName} (${studentId}); removing from session. lastSquare=${lastSquare} hadAnswer=${hadAnswerAtCleanup}`);
+          students.delete(studentId);
+          answers.delete(studentId);
+          broadcastStudentList();
+          broadcastVotes();
+        } else {
+          console.log(`[DISCONNECT] ${studentName} (${studentId}) reconnected before cleanup; skipping removal.`);
+        }
+        disconnectTimers.delete(studentId);
+      }, DISCONNECT_GRACE_MS));
+    } else {
+      console.log(`[DISCONNECT] ${studentName} (${studentId}) still has ${remainingSockets} active socket(s); skipping cleanup timer.`);
+    }
   });
 
   socket.on('ping-from-client', (msg) => {
@@ -564,15 +612,16 @@ io.on('connection', (socket) => {
 
   // Student state synchronization - check if student exists in backend
   socket.on('student-sync-request', () => {
-    const student = students.get(socket.id);
+    const studentId = socketToStudent.get(socket.id);
+    const student = students.get(studentId);
     if (student) {
-      socket.emit('student-sync-response', { 
-        exists: true, 
-        data: student 
+      socket.emit('student-sync-response', {
+        exists: true,
+        data: { id: studentId, name: student.name, joinedAt: student.joinedAt, square: student.square }
       });
     } else {
-      socket.emit('student-sync-response', { 
-        exists: false 
+      socket.emit('student-sync-response', {
+        exists: false
       });
     }
   });
@@ -610,6 +659,7 @@ io.on('connection', (socket) => {
     }
     
     students.clear();
+    socketToStudent.clear();
     answers.clear();
     currentQuiz = null;
     currentPhase = 1;
@@ -788,3 +838,5 @@ server.listen(PORT, async () => {
     console.log('[DATABASE] Table creation skipped (no database connection)');
   }
 });
+
+module.exports = { server, io, students, disconnectTimers };
