@@ -422,7 +422,7 @@ function broadcastVotes() {
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
-  socket.on('student-join', ({ name, student_id }) => {
+  socket.on('student-join', ({ name, student_id, square }) => {
     // Increase rate limit for large sessions
     const maxStudents = students.size;
     const rateMultiplier = Math.max(1, Math.ceil(maxStudents / 25));
@@ -432,6 +432,7 @@ io.on('connection', (socket) => {
     if (!cleanName) return;
 
     const studentId = student_id || socket.id;
+    const resumeSquare = typeof square === 'number' && square >= 0 ? square : null;
 
     // Cancel any pending cleanup for this student
     if (disconnectTimers.has(studentId)) {
@@ -444,13 +445,22 @@ io.on('connection', (socket) => {
     if (student) {
       // Existing student reconnecting; just add this socket
       student.sockets.add(socket.id);
+      if (resumeSquare !== null && typeof student.square !== 'number') {
+        student.square = resumeSquare;
+      }
+      if (resumeSquare !== null && typeof student.square === 'number' && student.square !== resumeSquare) {
+        console.log(`[RECOVERY] Updating square for ${cleanName} (${studentId}) from ${student.square} to ${resumeSquare}`);
+        student.square = resumeSquare;
+      }
     } else {
-      student = { name: cleanName, joinedAt: Date.now(), square: 0, sockets: new Set([socket.id]) };
+      const startingSquare = resumeSquare !== null ? resumeSquare : 0;
+      student = { name: cleanName, joinedAt: Date.now(), square: startingSquare, sockets: new Set([socket.id]) };
       students.set(studentId, student);
     }
 
     socketToStudent.set(socket.id, studentId);
-    console.log(`Student joined: ${cleanName} (${studentId}) via socket ${socket.id}`);
+    const squareInfo = typeof student.square === 'number' ? ` square=${student.square}` : '';
+    console.log(`Student joined: ${cleanName} (${studentId}) via socket ${socket.id}${squareInfo}`);
     broadcastStudentList();
     // Sync current quiz and phase if available
     if (currentQuiz && currentQuiz.content) {
