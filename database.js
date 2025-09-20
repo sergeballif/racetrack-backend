@@ -172,7 +172,7 @@ const gameDatabase = {
       const result = await pool.query(`
         SELECT * FROM game_events 
         WHERE game_id = $1 
-        ORDER BY timestamp ASC
+        ORDER BY timestamp ASC, id ASC
       `, [gameId]);
 
       return result.rows;

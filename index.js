@@ -792,11 +792,20 @@ io.on('connection', (socket) => {
     
     // Record phase advancement for replay mode (doesn't affect live game)
     if (currentGameSession) {
-      gameDatabase.logEvent(currentGameSession.id, 'phase_advance', {
+      const phaseEventData = {
         phase: nextPhase,
         question_idx: nextQuestionIdx,
-        timestamp: new Date().toISOString()
-      }).catch(err => {
+        timestamp: new Date().toISOString(),
+        quizmaster_square: quizmasterSquare,
+        quizmaster_enabled: quizmasterEnabled,
+        quizmaster_name: quizmasterName
+      };
+
+      if (Array.isArray(correctIdxs)) {
+        phaseEventData.correct_idxs = correctIdxs;
+      }
+
+      gameDatabase.logEvent(currentGameSession.id, 'phase_advance', phaseEventData).catch(err => {
         console.log('[REPLAY] Error logging phase advance:', err.message);
       });
     }
