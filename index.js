@@ -408,6 +408,24 @@ function broadcastQuizmasterState() {
   });
 }
 
+function logQuizmasterEvent(eventType, payload = {}, context = {}) {
+  if (!currentGameSession) return;
+
+  const eventData = {
+    enabled: quizmasterEnabled,
+    name: quizmasterName,
+    square: quizmasterSquare,
+    timestamp: new Date().toISOString(),
+    question_idx: context.questionIdx ?? currentQuestionIdx,
+    phase: context.phase ?? currentPhase,
+    ...payload,
+  };
+
+  gameDatabase.logEvent(currentGameSession.id, eventType, eventData).catch(err => {
+    console.log('[REPLAY] Error logging quizmaster event:', err.message);
+  });
+}
+
 function broadcastVotes() {
   // Tally votes for each answer index
   const counts = {};
@@ -688,12 +706,27 @@ io.on('connection', (socket) => {
     if (typeof content !== 'string' || content.length > 100000) return;
     console.log('[DEBUG] Loaded quiz markdown, length:', content?.length);
     
-    // Create database session for replay mode (doesn't affect live game)
+    // Reset local game state for new quiz
+    quizmasterSquare = 0;
+    broadcastQuizmasterState();
+    currentQuiz = { content };
+    currentPhase = 1;
+    currentQuestionIdx = 0;
+
+    // Create database session for replay mode (doesn't affect live gameplay)
     if (filename) {
       gameDatabase.createGameSession(filename, content).then(session => {
         if (session) {
           currentGameSession = session;
           console.log(`[REPLAY] Session created: ${session.session_slug}`);
+
+          logQuizmasterEvent('quizmaster_state', {
+            reason: 'session_start',
+            square: quizmasterSquare
+          }, {
+            questionIdx: 0,
+            phase: 1
+          });
           
           // Send email notification with replay URL
           const teacherEmail = process.env.TEACHER_EMAIL;
@@ -714,11 +747,6 @@ io.on('connection', (socket) => {
         console.log('[REPLAY] Session creation failed (continuing without replay):', err.message);
       });
     }
-    
-    // Broadcast to all clients so everyone loads the same quiz (unchanged)
-    currentQuiz = { content };
-    currentPhase = 1;
-    currentQuestionIdx = 0;
     io.emit('quiz-md-loaded', { content });
   });
 
@@ -742,9 +770,22 @@ io.on('connection', (socket) => {
         console.log('[QUIZMASTER] Total answers:', totalAnswers, 'Wrong answers:', wrongAnswers, 'Wrong ratio:', wrongRatio, 'Move:', quizmasterMove, 'Enabled:', quizmasterEnabled);
         
         if (quizmasterMove > 0) {
+          const previousSquare = quizmasterSquare;
           quizmasterSquare = (quizmasterSquare + quizmasterMove) % 96;
           // Always broadcast state updates so frontend stays in sync
           broadcastQuizmasterState();
+
+          logQuizmasterEvent('quizmaster_move', {
+            move: quizmasterMove,
+            previous_square: previousSquare,
+            square: quizmasterSquare,
+            wrong_ratio: wrongRatio,
+            wrong_answers: wrongAnswers,
+            total_answers: totalAnswers
+          }, {
+            questionIdx: currentQuestionIdx,
+            phase: nextPhase
+          });
         }
       }
     }
@@ -804,6 +845,12 @@ io.on('connection', (socket) => {
     quizmasterEnabled = enabled;
     console.log('[QUIZMASTER] Enabled:', enabled);
     broadcastQuizmasterState();
+
+    logQuizmasterEvent('quizmaster_state', {
+      reason: 'admin_toggle',
+      enabled: quizmasterEnabled,
+      square: quizmasterSquare
+    });
   });
 
   socket.on('admin-set-quizmaster-name', ({ name }) => {
@@ -816,6 +863,11 @@ io.on('connection', (socket) => {
     quizmasterName = cleanName;
     console.log('[QUIZMASTER] Name set to:', cleanName);
     broadcastQuizmasterState();
+
+    logQuizmasterEvent('quizmaster_state', {
+      reason: 'admin_name',
+      name: quizmasterName
+    });
   });
 
   socket.on('admin-adjust-quizmaster-square', ({ square }) => {
@@ -825,6 +877,11 @@ io.on('connection', (socket) => {
     quizmasterSquare = square;
     console.log('[QUIZMASTER] Square adjusted to:', square);
     broadcastQuizmasterState();
+
+    logQuizmasterEvent('quizmaster_state', {
+      reason: 'admin_adjust_square',
+      square: quizmasterSquare
+    });
   });
 
   // Send current quizmaster state to new connections
