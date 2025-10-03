@@ -372,7 +372,7 @@ const answers = new Map();
 // Map of student_id => timeout for cleanup delay
 const disconnectTimers = new Map();
 const DISCONNECT_GRACE_MS = parseInt(process.env.DISCONNECT_GRACE_MS || '15000', 10);
-let currentQuiz = null; // { content: string }
+let currentQuiz = null; // { content: string, filename?: string }
 let currentPhase = 1;
 let currentQuestionIdx = 0;
 
@@ -383,6 +383,7 @@ let quizmasterSquare = 0;
 
 // --- Replay mode database state (optional, doesn't affect live gameplay) ---
 let currentGameSession = null; // { id, session_slug } for current live session
+let sessionActive = false;
 initDatabase(); // Initialize database connection (safe if no DATABASE_URL)
 
 // Initialize email service with logging
@@ -408,6 +409,10 @@ function broadcastQuizmasterState() {
   });
 }
 
+function broadcastSessionState() {
+  io.emit('session-state', { active: sessionActive });
+}
+
 function logQuizmasterEvent(eventType, payload = {}, context = {}) {
   if (!currentGameSession) return;
 
@@ -426,6 +431,26 @@ function logQuizmasterEvent(eventType, payload = {}, context = {}) {
   });
 }
 
+async function finalizeCurrentGameSession() {
+  if (!currentGameSession) return;
+
+  const session = currentGameSession;
+  currentGameSession = null;
+
+  const finalPositions = Array.from(students.entries()).map(([id, s]) => ({
+    id,
+    name: s.name,
+    square: s.square || 0,
+    totalCorrect: 0 // TODO: Track correct answers
+  }));
+
+  try {
+    await gameDatabase.completeGame(session.id, finalPositions);
+  } catch (err) {
+    console.log('[REPLAY] Error completing session:', err.message);
+  }
+}
+
 function broadcastVotes() {
   // Tally votes for each answer index
   const counts = {};
@@ -439,6 +464,8 @@ function broadcastVotes() {
 // Socket.io minimal test + student join
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
+
+  socket.emit('session-state', { active: sessionActive });
 
   socket.on('student-join', ({ name, student_id, square }) => {
     // Increase rate limit for large sessions
@@ -665,57 +692,94 @@ io.on('connection', (socket) => {
   });
 
   // Teacher: restart game (reset all tokens, answers, and quiz)
-  socket.on('restart-game', () => {
+  const endSession = () => {
     // Clear all disconnect timers
     for (const timer of disconnectTimers.values()) {
       clearTimeout(timer);
     }
     disconnectTimers.clear();
-    
+
     // Complete current session if it exists (for replay mode)
-    if (currentGameSession) {
-      const finalPositions = Array.from(students.entries()).map(([id, s]) => ({
-        id,
-        name: s.name,
-        square: s.square || 0,
-        totalCorrect: 0 // TODO: Track correct answers
-      }));
-      gameDatabase.completeGame(currentGameSession.id, finalPositions).catch(err => {
-        console.log('[REPLAY] Error completing session:', err.message);
-      });
-      currentGameSession = null;
-    }
-    
+    finalizeCurrentGameSession();
+
     students.clear();
     socketToStudent.clear();
     answers.clear();
-    currentQuiz = null;
     currentPhase = 1;
     currentQuestionIdx = 0;
     quizmasterSquare = 0; // Reset quizmaster position
     broadcastStudentList();
     broadcastVotes();
     broadcastQuizmasterState();
+    sessionActive = false;
+    broadcastSessionState();
     // Emit a 'game-restarted' event for frontend to reset state
     io.emit('game-restarted');
+  };
+
+  socket.on('restart-game', () => {
+    endSession();
   });
 
-  // Teacher: load quiz markdown and broadcast to all clients
-  socket.on('load-quiz-md', ({ content, filename }) => {
-    // Limit quiz file size and validate type
-    if (typeof content !== 'string' || content.length > 100000) return;
-    console.log('[DEBUG] Loaded quiz markdown, length:', content?.length);
-    
-    // Reset local game state for new quiz
-    quizmasterSquare = 0;
-    broadcastQuizmasterState();
-    currentQuiz = { content };
+  socket.on('admin-end-session', () => {
+    const endReason = sessionActive ? 'closing_active_session' : 'already_inactive';
+    console.log(`[ADMIN][REQUEST] admin-end-session (${endReason}) from ${socket.id}`);
+    if (!sessionActive) {
+      socket.emit('session-state', { active: sessionActive });
+      return;
+    }
+    console.log('[ADMIN] Ending session now');
+    endSession();
+  });
+
+  socket.on('admin-start-session', () => {
+    const startReason = sessionActive
+      ? 'session_already_active'
+      : (!currentQuiz || !currentQuiz.content)
+        ? 'missing_quiz_content'
+        : 'ready_to_start';
+    console.log(`[ADMIN][REQUEST] admin-start-session (${startReason}) from ${socket.id}`);
+
+    if (sessionActive) {
+      socket.emit('session-error', { reason: 'session_already_active' });
+      socket.emit('session-state', { active: sessionActive });
+      return;
+    }
+
+    if (!currentQuiz || !currentQuiz.content) {
+      socket.emit('session-error', { reason: 'missing_quiz' });
+      socket.emit('session-state', { active: sessionActive });
+      return;
+    }
+
+    if (currentGameSession) {
+      finalizeCurrentGameSession();
+    }
+
+    console.log('[ADMIN] Starting session');
+    answers.clear();
     currentPhase = 1;
     currentQuestionIdx = 0;
+    quizmasterSquare = 0;
+    broadcastVotes();
+    broadcastQuizmasterState();
+
+    // Reset all player squares to 0 at the beginning of the session
+    for (const student of students.values()) {
+      student.square = 0;
+    }
+    broadcastStudentList();
+
+    sessionActive = true;
+    broadcastSessionState();
+
+    // Re-emit the quiz to ensure everyone returns to the first question
+    io.emit('quiz-md-loaded', { content: currentQuiz.content });
 
     // Create database session for replay mode (doesn't affect live gameplay)
+    const filename = currentQuiz.filename;
     if (filename) {
-      gameDatabase.createGameSession(filename, content).then(session => {
+      gameDatabase.createGameSession(filename, currentQuiz.content).then(session => {
         if (session) {
           currentGameSession = session;
           console.log(`[REPLAY] Session created: ${session.session_slug}`);
@@ -727,7 +791,7 @@ io.on('connection', (socket) => {
             questionIdx: 0,
             phase: 1
           });
-          
+
           // Send email notification with replay URL
           const teacherEmail = process.env.TEACHER_EMAIL;
           if (teacherEmail) {
@@ -747,6 +811,22 @@ io.on('connection', (socket) => {
         console.log('[REPLAY] Session creation failed (continuing without replay):', err.message);
       });
     }
+  });
+
+  // Teacher: load quiz markdown and broadcast to all clients
+  socket.on('load-quiz-md', ({ content, filename }) => {
+    // Limit quiz file size and validate type
+    if (typeof content !== 'string' || content.length > 100000) return;
+    console.log('[DEBUG] Loaded quiz markdown, length:', content?.length);
+
+    // Reset local game state for new quiz
+    quizmasterSquare = 0;
+    broadcastQuizmasterState();
+    currentQuiz = { content, filename };
+    currentPhase = 1;
+    currentQuestionIdx = 0;
+    sessionActive = false;
+    broadcastSessionState();
     io.emit('quiz-md-loaded', { content });
   });
 
