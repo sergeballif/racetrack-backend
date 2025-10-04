@@ -43,7 +43,8 @@ async function sendReplayNotification(recipientEmail, sessionSlug, quizFilename)
     
     // Construct the deletion URL 
     const backendUrl = process.env.BACKEND_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:3000';
-    const deleteUrl = `${backendUrl}/api/session/${sessionSlug}`;
+    const deleteUrl = `${backendUrl}/delete/${sessionSlug}`;
+    const replayListUrl = `${backendUrl}/replays`;
 
     // Clean up filename for display
     const displayName = quizFilename.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
@@ -80,8 +81,18 @@ async function sendReplayNotification(recipientEmail, sessionSlug, quizFilename)
           <h4 style="margin: 0 0 10px 0; color: #dc2626;">🗑️ Delete This Session (Optional):</h4>
           <p style="margin: 0 0 10px 0; color: #dc2626;">If this was a practice round or you won't need this replay, you can delete it to save database space:</p>
           <p style="margin: 0;">
-            <a href="${backendUrl}/delete/${sessionSlug}" style="color: #dc2626; text-decoration: underline;">
+            <a href="${deleteUrl}" style="color: #dc2626; text-decoration: underline;">
               Click here to delete session
+            </a>
+          </p>
+        </div>
+
+        <div style="background: #f0fdf4; border-left: 4px solid #16a34a; padding: 15px; margin: 20px 0;">
+          <h4 style="margin: 0 0 10px 0; color: #15803d;">📋 View All Replay Sessions:</h4>
+          <p style="margin: 0 0 10px 0; color: #166534;">Visit the master replay list to see every replay currently stored in the database.</p>
+          <p style="margin: 0;">
+            <a href="${replayListUrl}" style="color: #15803d; text-decoration: underline;">
+              Open Replay List
             </a>
           </p>
         </div>
@@ -117,7 +128,11 @@ Date: ${currentDate}
 
 Replay URL: ${replayUrl}
 
+Delete session: ${deleteUrl}
+
 Share this URL with students who missed the live session. They can play through the quiz at their own pace and compete against the recorded results!
+
+Replay list: ${replayListUrl}
 
 How it works:
 - Students advance questions themselves

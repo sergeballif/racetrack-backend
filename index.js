@@ -226,21 +226,114 @@ app.get('/api/session/:sessionSlug/exists', async (req, res) => {
   }
 });
 
+// Replay list page
+app.get('/replays', async (req, res) => {
+  try {
+    const sessions = await gameDatabase.getAllGameSessions();
+    const frontendUrl = process.env.FRONTEND_URL || 'https://science.github.io/quiz-game';
+    const backendUrl = process.env.BACKEND_URL || process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`;
+
+    const sessionCards = sessions.length
+      ? sessions.map(session => {
+          const displayName = session.quiz_filename
+            ? session.quiz_filename.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ')
+            : 'Untitled Quiz';
+          const createdAt = session.created_at
+            ? new Date(session.created_at).toLocaleString()
+            : 'Unknown';
+          const replayUrl = `${frontendUrl}?session=${session.session_slug}&mode=replay`;
+          const deleteUrl = `${backendUrl}/delete/${session.session_slug}`;
+
+          return `
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <div class="card-title">${displayName}</div>
+                  <div class="card-meta">Session ID: <code>${session.session_slug}</code></div>
+                </div>
+                <span class="status ${session.status === 'completed' ? 'status-completed' : 'status-active'}">
+                  ${session.status ? session.status.toUpperCase() : 'UNKNOWN'}
+                </span>
+              </div>
+              <div class="card-body">
+                <div class="card-date">Created: ${createdAt}</div>
+                <div class="card-actions">
+                  <a class="btn btn-primary" href="${replayUrl}" target="_blank" rel="noopener noreferrer">View Replay</a>
+                  <a class="btn btn-danger" href="${deleteUrl}" rel="noopener noreferrer">Delete Replay</a>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('\n')
+      : '<p class="empty">No replay sessions have been recorded yet.</p>';
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Replay Sessions</title>
+          <style>
+            body { font-family: Arial, sans-serif; background: #f3f4f6; margin: 0; padding: 40px 20px; }
+            .container { max-width: 900px; margin: 0 auto; }
+            h1 { color: #111827; margin-bottom: 10px; }
+            p.subtitle { color: #4b5563; margin-bottom: 30px; }
+            .card { background: #ffffff; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 10px 15px -3px rgba(15, 23, 42, 0.1), 0 4px 6px -4px rgba(15, 23, 42, 0.1); }
+            .card-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap; }
+            .card-title { font-size: 1.25rem; font-weight: 600; color: #1f2937; }
+            .card-meta { color: #6b7280; margin-top: 5px; }
+            .card-body { display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap; margin-top: 15px; }
+            .card-date { color: #374151; font-weight: 500; }
+            .card-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+            .btn { display: inline-block; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600; transition: transform 0.15s ease, box-shadow 0.15s ease; }
+            .btn-primary { background: #2563eb; color: #ffffff; box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.4); }
+            .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 20px 25px -5px rgba(37, 99, 235, 0.35); }
+            .btn-danger { background: #dc2626; color: #ffffff; box-shadow: 0 10px 15px -3px rgba(220, 38, 38, 0.3); }
+            .btn-danger:hover { transform: translateY(-1px); box-shadow: 0 20px 25px -5px rgba(220, 38, 38, 0.3); }
+            .status { padding: 6px 12px; border-radius: 9999px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+            .status-completed { background: #dcfce7; color: #166534; }
+            .status-active { background: #e0f2fe; color: #1d4ed8; }
+            .empty { background: #e5e7eb; color: #374151; padding: 20px; border-radius: 10px; text-align: center; }
+            .top-actions { display: flex; justify-content: flex-end; margin-bottom: 20px; }
+            .top-actions a { color: #2563eb; text-decoration: none; font-weight: 600; }
+            .top-actions a:hover { text-decoration: underline; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="top-actions">
+              <a href="${backendUrl}/api/db-test">Database Status</a>
+            </div>
+            <h1>Replay Sessions</h1>
+            <p class="subtitle">Newest sessions appear first. Share replay links with students or delete old sessions to free up space.</p>
+            ${sessionCards}
+          </div>
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error('[REPLAY LIST] Error rendering replay list:', error);
+    res.status(500).send('Failed to load replay list.');
+  }
+});
+
 // Simple deletion page for sessions
 app.get('/delete/:sessionSlug', async (req, res) => {
   try {
     const { sessionSlug } = req.params;
     const session = await gameDatabase.getGameSession(sessionSlug);
-    
+    const backendUrl = process.env.BACKEND_URL || process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`;
+
     if (!session) {
       return res.send(`
         <html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
           <h2>Session Not Found</h2>
           <p>No replay session found with ID: <code>${sessionSlug}</code></p>
+          <p style="margin-top: 20px;"><a href="${backendUrl}/replays" style="color: #2563eb; text-decoration: none;">&larr; Back to Replay List</a></p>
         </body></html>
       `);
     }
-    
+
     res.send(`
       <html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
         <h2>Delete Replay Session</h2>
@@ -257,6 +350,7 @@ app.get('/delete/:sessionSlug', async (req, res) => {
             🗑️ Delete Session
           </button>
         </form>
+        <p style="margin-top: 20px;"><a href="${backendUrl}/replays" style="color: #2563eb; text-decoration: none;">&larr; Back to Replay List</a></p>
       </body></html>
     `);
   } catch (error) {
@@ -270,19 +364,21 @@ app.post('/delete/:sessionSlug', async (req, res) => {
   try {
     const { sessionSlug } = req.params;
     console.log(`[DELETE POST] Attempting to delete session: ${sessionSlug}`);
-    
+    const backendUrl = process.env.BACKEND_URL || process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`;
+
     const session = await gameDatabase.getGameSession(sessionSlug);
-    
+
     if (!session) {
       return res.send(`
         <html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
           <h2>Session Not Found</h2>
           <p>No replay session found with ID: <code>${sessionSlug}</code></p>
           <p>It may have already been deleted.</p>
+          <p style="margin-top: 20px;"><a href="${backendUrl}/replays" style="color: #2563eb; text-decoration: none;">&larr; Back to Replay List</a></p>
         </body></html>
       `);
     }
-    
+
     const deleted = await gameDatabase.deleteGameSession(session.id);
     
     if (deleted) {
@@ -295,6 +391,7 @@ app.post('/delete/:sessionSlug', async (req, res) => {
             <strong>Session ID:</strong> ${sessionSlug}
           </div>
           <p>The replay session and all associated data have been permanently deleted.</p>
+          <p style="margin-top: 20px;"><a href="${backendUrl}/replays" style="color: #2563eb; text-decoration: none;">&larr; Back to Replay List</a></p>
         </body></html>
       `);
     } else {
@@ -304,6 +401,7 @@ app.post('/delete/:sessionSlug', async (req, res) => {
           <h2>❌ Deletion Failed</h2>
           <p>Failed to delete session: <code>${sessionSlug}</code></p>
           <p>Please try again or contact support.</p>
+          <p style="margin-top: 20px;"><a href="${backendUrl}/replays" style="color: #2563eb; text-decoration: none;">&larr; Back to Replay List</a></p>
         </body></html>
       `);
     }
@@ -314,6 +412,7 @@ app.post('/delete/:sessionSlug', async (req, res) => {
         <h2>❌ Error</h2>
         <p>An error occurred while deleting the session.</p>
         <p>Error: ${error.message}</p>
+        <p style="margin-top: 20px;"><a href="${backendUrl}/replays" style="color: #2563eb; text-decoration: none;">&larr; Back to Replay List</a></p>
       </body></html>
     `);
   }

@@ -216,14 +216,32 @@ const gameDatabase = {
 
     try {
       const result = await pool.query(`
-        SELECT * FROM final_positions 
-        WHERE game_id = $1 
+        SELECT * FROM final_positions
+        WHERE game_id = $1
         ORDER BY final_square DESC, student_name ASC
       `, [gameId]);
 
       return result.rows;
     } catch (error) {
       console.error('[DATABASE] Error getting final positions:', error);
+      return [];
+    }
+  },
+
+  // Get all game sessions ordered from newest to oldest
+  async getAllGameSessions() {
+    if (!pool) return [];
+
+    try {
+      const result = await pool.query(`
+        SELECT id, session_slug, quiz_filename, created_at, completed_at, status
+        FROM games
+        ORDER BY created_at DESC, session_slug DESC
+      `);
+
+      return result.rows;
+    } catch (error) {
+      console.error('[DATABASE] Error listing game sessions:', error);
       return [];
     }
   },
