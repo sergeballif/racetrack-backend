@@ -480,6 +480,17 @@ let quizmasterEnabled = true;
 let quizmasterName = "Math Dad";
 let quizmasterSquare = 0;
 
+// --- Waiting screen appearance ---
+const DEFAULT_WAITING_LEFT_NAME = 'Ketchup';
+const DEFAULT_WAITING_RIGHT_NAME = 'Mustard';
+const DEFAULT_WAITING_LEFT_COLOR = '#f72702';
+const DEFAULT_WAITING_RIGHT_COLOR = '#f1c232';
+
+let waitingLeftName = DEFAULT_WAITING_LEFT_NAME;
+let waitingRightName = DEFAULT_WAITING_RIGHT_NAME;
+let waitingLeftColor = DEFAULT_WAITING_LEFT_COLOR;
+let waitingRightColor = DEFAULT_WAITING_RIGHT_COLOR;
+
 // --- Replay mode database state (optional, doesn't affect live gameplay) ---
 let currentGameSession = null; // { id, session_slug } for current live session
 let sessionActive = false;
@@ -510,6 +521,32 @@ function broadcastQuizmasterState() {
 
 function broadcastSessionState() {
   io.emit('session-state', { active: sessionActive });
+}
+
+function normalizeHexColor(value, fallback) {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) {
+    return `#${trimmed.slice(1).toLowerCase()}`;
+  }
+  if (/^#[0-9a-fA-F]{3}$/.test(trimmed)) {
+    const [, r, g, b] = trimmed;
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return fallback;
+}
+
+function getWaitingConfigPayload() {
+  return {
+    leftName: waitingLeftName,
+    leftColor: waitingLeftColor,
+    rightName: waitingRightName,
+    rightColor: waitingRightColor,
+  };
+}
+
+function broadcastWaitingConfig(target = io) {
+  target.emit('waiting-screen-config', getWaitingConfigPayload());
 }
 
 function logQuizmasterEvent(eventType, payload = {}, context = {}) {
@@ -565,6 +602,11 @@ io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
   socket.emit('session-state', { active: sessionActive });
+  broadcastWaitingConfig(socket);
+
+  socket.on('get-waiting-screen-config', () => {
+    socket.emit('waiting-screen-config', getWaitingConfigPayload());
+  });
 
   socket.on('student-join', ({ name, student_id, square }) => {
     // Increase rate limit for large sessions
@@ -1000,13 +1042,14 @@ io.on('connection', (socket) => {
       socket.emit('quiz-md-loaded', { content: currentQuiz.content });
       socket.emit('advance-phase', { nextPhase: currentPhase, nextQuestionIdx: currentQuestionIdx });
     }
+    socket.emit('waiting-screen-config', getWaitingConfigPayload());
   });
 
   // --- Admin adjust student square ---
   socket.on('admin-adjust-square', ({ id, square }) => {
     if (!rateLimit(socket.id, 'admin-adjust-square')) return;
     if (!id || typeof square !== 'number' || square < 0) return;
-    
+
     const student = students.get(id);
     if (!student) return;
     
@@ -1023,6 +1066,54 @@ io.on('connection', (socket) => {
     
     io.emit('student-move-update', update);
     broadcastStudentList();
+  });
+
+  socket.on('admin-set-waiting-config', ({ leftName, leftColor, rightName, rightColor } = {}) => {
+    if (!rateLimit(socket.id, 'admin-set-waiting-config', 10)) return;
+
+    let changed = false;
+
+    if (typeof leftName === 'string') {
+      const sanitizedLeft = sanitizeName(leftName);
+      if (sanitizedLeft && sanitizedLeft !== waitingLeftName) {
+        waitingLeftName = sanitizedLeft;
+        changed = true;
+      }
+    }
+
+    if (typeof rightName === 'string') {
+      const sanitizedRight = sanitizeName(rightName);
+      if (sanitizedRight && sanitizedRight !== waitingRightName) {
+        waitingRightName = sanitizedRight;
+        changed = true;
+      }
+    }
+
+    if (typeof leftColor === 'string') {
+      const trimmedLeftColor = leftColor.trim();
+      const normalizedLeft = trimmedLeftColor === ''
+        ? DEFAULT_WAITING_LEFT_COLOR
+        : normalizeHexColor(trimmedLeftColor, waitingLeftColor);
+      if (normalizedLeft !== waitingLeftColor) {
+        waitingLeftColor = normalizedLeft;
+        changed = true;
+      }
+    }
+
+    if (typeof rightColor === 'string') {
+      const trimmedRightColor = rightColor.trim();
+      const normalizedRight = trimmedRightColor === ''
+        ? DEFAULT_WAITING_RIGHT_COLOR
+        : normalizeHexColor(trimmedRightColor, waitingRightColor);
+      if (normalizedRight !== waitingRightColor) {
+        waitingRightColor = normalizedRight;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      broadcastWaitingConfig();
+    }
   });
 
   // --- Admin quizmaster controls ---
