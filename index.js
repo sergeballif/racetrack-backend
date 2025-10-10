@@ -485,11 +485,13 @@ const DEFAULT_WAITING_LEFT_NAME = 'Ketchup';
 const DEFAULT_WAITING_RIGHT_NAME = 'Mustard';
 const DEFAULT_WAITING_LEFT_COLOR = '#f72702';
 const DEFAULT_WAITING_RIGHT_COLOR = '#f1c232';
+const DEFAULT_WAITING_SHOW_BREAKOUT = false;
 
 let waitingLeftName = DEFAULT_WAITING_LEFT_NAME;
 let waitingRightName = DEFAULT_WAITING_RIGHT_NAME;
 let waitingLeftColor = DEFAULT_WAITING_LEFT_COLOR;
 let waitingRightColor = DEFAULT_WAITING_RIGHT_COLOR;
+let waitingShowBreakout = DEFAULT_WAITING_SHOW_BREAKOUT;
 
 // --- Replay mode database state (optional, doesn't affect live gameplay) ---
 let currentGameSession = null; // { id, session_slug } for current live session
@@ -542,6 +544,7 @@ function getWaitingConfigPayload() {
     leftColor: waitingLeftColor,
     rightName: waitingRightName,
     rightColor: waitingRightColor,
+    showBreakout: waitingShowBreakout,
   };
 }
 
@@ -1068,7 +1071,7 @@ io.on('connection', (socket) => {
     broadcastStudentList();
   });
 
-  socket.on('admin-set-waiting-config', ({ leftName, leftColor, rightName, rightColor } = {}) => {
+  socket.on('admin-set-waiting-config', ({ leftName, leftColor, rightName, rightColor, showBreakout } = {}) => {
     if (!rateLimit(socket.id, 'admin-set-waiting-config', 10)) return;
 
     let changed = false;
@@ -1107,6 +1110,14 @@ io.on('connection', (socket) => {
         : normalizeHexColor(trimmedRightColor, waitingRightColor);
       if (normalizedRight !== waitingRightColor) {
         waitingRightColor = normalizedRight;
+        changed = true;
+      }
+    }
+
+    if (typeof showBreakout === 'boolean') {
+      const normalizedShowBreakout = Boolean(showBreakout);
+      if (normalizedShowBreakout !== waitingShowBreakout) {
+        waitingShowBreakout = normalizedShowBreakout;
         changed = true;
       }
     }
